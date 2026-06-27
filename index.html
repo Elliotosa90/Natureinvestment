@@ -161,7 +161,6 @@
             .admin-grid { grid-template-columns: 1fr; }
             .dashboard-content { padding: 16px; }
         }
-        /* NOWPayments specific */
         .np-invoice-frame { width: 100%; min-height: 500px; border: 1px solid var(--border); border-radius: 8px; }
         .np-status { font-size: 12px; color: var(--text2); margin-top: 6px; }
         .crypto-address-display { background: var(--card); border: 1px solid var(--blue); border-radius: 6px; padding: 12px; margin-bottom: 10px; word-break: break-all; font-family: monospace; font-size: 13px; color: var(--blue); }
@@ -336,7 +335,7 @@
             </div>
 
             <!-- ============================================================ -->
-            <!-- NOWPAYMENTS SETTINGS (SINGLE INTEGRATED SECTION) -->
+            <!-- NOWPAYMENTS SETTINGS -->
             <!-- ============================================================ -->
             <div class="admin-section">
                 <h3>🔮 NOWPayments Settings</h3>
@@ -815,8 +814,7 @@ function userLogout() {
     clearSession();
     document.getElementById('authContainer').classList.remove('hidden');
     document.getElementById('userDashboard').classList.remove('active');
-
-document.getElementById('loginUsername').value = '';
+    document.getElementById('loginUsername').value = '';
     document.getElementById('loginPassword').value = '';
 }
 
@@ -1155,7 +1153,6 @@ function closeModal(id) { document.getElementById(id).classList.remove('active')
 
 // ==================================================================
 // NOWPAYMENTS — CREATE INVOICE FOR DEPOSIT
-// Uses corsproxy.io to bypass CORS
 // ==================================================================
 function showDepositModal() {
     var apiKey = appData.settings&&appData.settings.npApiKey;
@@ -1218,10 +1215,8 @@ function createDepositInvoice() {
             document.getElementById('depositInvoiceLink').href = data.invoice_url;
             document.getElementById('depositInvoiceLink').innerHTML = '🔗 Open NOWPayments Payment Page';
             document.getElementById('depositStatusPoll').innerHTML = '⏳ Waiting for payment... (checking every 15s)';
-            // Start polling for payment status
             if (depositPollInterval) clearInterval(depositPollInterval);
             depositPollInterval = setInterval(function(){ checkInvoicePaymentStatus(data.id, amt, orderId); }, 15000);
-            // Open the invoice in new tab
             window.open(data.invoice_url, '_blank');
         } else {
             e.textContent = 'Failed to create invoice: '+(data.message||JSON.stringify(data));
@@ -1271,9 +1266,8 @@ function checkInvoicePaymentStatus(invoiceId, expectedAmt, orderId) {
     .catch(function(){});
 }
 
-
 // ==================================================================
-// CREDIT DEPOSIT — called when NOWPayments confirms payment
+// CREDIT DEPOSIT
 // ==================================================================
 function creditDeposit(ref, amt) {
     var user = appData.users[currentUser];
@@ -1315,37 +1309,7 @@ function creditDeposit(ref, amt) {
 }
 
 // ==================================================================
-// MANUAL DEPOSIT CONFIRMATION (Admin override)
-// ==================================================================
-function adminManualConfirmDeposit(un, amt) {
-    if (!confirm('Manually credit $'+amt.toFixed(2)+' to '+un+'?')) return;
-    var ref = 'MANUAL-'+Date.now();
-    var user = appData.users[un];
-    if (!user) return;
-    var d = getNowStr();
-    user.balance += amt;
-    user.invested += amt;
-    if (!user.processedReferences) user.processedReferences = [];
-    user.processedReferences.push(ref);
-    if (!user.transactions) user.transactions = [];
-    user.transactions.push({date:d, type:'deposit', amount:amt, description:'Admin manual credit'});
-    var refPromise = Promise.resolve();
-    if (user.referredBy && appData.users[user.referredBy]) {
-        var referrer = appData.users[user.referredBy];
-        if (!referrer.bonusPaidReferees || referrer.bonusPaidReferees.indexOf(un)===-1) {
-            refPromise = registerReferralBonus(un, amt);
-        }
-    }
-    var updates = {};
-    updates['users/'+un+'/balance'] = user.balance;
-    updates['users/'+un+'/invested'] = user.invested;
-    updates['users/'+un+'/processedReferences'] = user.processedReferences;
-    updates['users/'+un+'/transactions'] = user.transactions;
-    refPromise.then(function(){db.ref('/').update(updates).then(function(){alert('Credited $'+amt.toFixed(2)+' to '+un);});});
-}
-
-// ==================================================================
-// WITHDRAWAL — User submits withdrawal request
+// WITHDRAWAL
 // ==================================================================
 function showWithdrawModal() {
     if (currentUserData.status === 'frozen') { alert('Withdrawals disabled.'); return; }
@@ -1377,6 +1341,39 @@ function processWithdraw() {
     updates['users/'+currentUser+'/balance'] = u.balance;
     updates['users/'+currentUser+'/withdrawals'] = u.withdrawals;
     db.ref('/').update(updates).then(function(){closeModal('withdrawModal'); alert('✅ Withdrawal submitted! Admin will process via NOWPayments payout.');});
+}
+
+// ==================================================================
+// Admin credit helper — replaces inline prompt() + duplicate Credit button
+// ==================================================================
+function adminCreditUser(un) {
+    var amt = prompt('Amount to manually credit to '+un+' (USD):');
+    if (!amt || isNaN(amt) || parseFloat(amt)<=0) return;
+    amt = parseFloat(amt);
+    if (!confirm('Manually credit $'+amt.toFixed(2)+' to '+un+'?')) return;
+    var ref = 'MANUAL-'+Date.now();
+    var user = appData.users[un];
+    if (!user) return;
+    var d = getNowStr();
+    user.balance += amt;
+    user.invested += amt;
+    if (!user.processedReferences) user.processedReferences = [];
+    user.processedReferences.push(ref);
+    if (!user.transactions) user.transactions = [];
+    user.transactions.push({date:d, type:'deposit', amount:amt, description:'Admin manual credit'});
+    var refPromise = Promise.resolve();
+    if (user.referredBy && appData.users[user.referredBy]) {
+        var referrer = appData.users[user.referredBy];
+        if (!referrer.bonusPaidReferees || referrer.bonusPaidReferees.indexOf(un)===-1) {
+            refPromise = registerReferralBonus(un, amt);
+        }
+    }
+    var updates = {};
+    updates['users/'+un+'/balance'] = user.balance;
+    updates['users/'+un+'/invested'] = user.invested;
+    updates['users/'+un+'/processedReferences'] = user.processedReferences;
+    updates['users/'+un+'/transactions'] = user.transactions;
+    refPromise.then(function(){db.ref('/').update(updates).then(function(){alert('✅ Credited $'+amt.toFixed(2)+' to '+un); refreshAdminData();});});
 }
 
 // ==================================================================
@@ -1421,7 +1418,6 @@ function refreshAdminData() {
                 '<button class="btn-blue" onclick="adminSetStatus(\''+un+'\')">Set</button>'+
                 '<button class="btn-green" onclick="adminAddBalance(\''+un+'\')">+Add</button>'+
                 '<button class="btn-orange" onclick="adminDeductBalance(\''+un+'\')">-Deduct</button>'+
-                '<button class="btn-teal" onclick="adminManualConfirmDeposit(\''+un+'\','+prompt('Amount to manually credit (USD):','10')+')">💰Credit</button>'+
                 '<button class="btn-yellow" onclick="adminResetUserAccount(\''+un+'\')">Reset</button>'+
                 '<button class="btn-red" onclick="adminDeleteUser(\''+un+'\')">🗑 Delete</button>'+
                 '</div></div>';
@@ -1455,7 +1451,7 @@ function renderPendingWithdrawals() {
 }
 
 // ==================================================================
-// ADMIN APPROVE WITHDRAWAL — processes payout via NOWPayments API
+// ADMIN APPROVE WITHDRAWAL
 // ==================================================================
 function adminApproveWithdrawNP(un, idx) {
     if (!appData.users[un] || !appData.users[un].withdrawals || !appData.users[un].withdrawals[idx]) return;
@@ -1470,7 +1466,6 @@ function adminApproveWithdrawNP(un, idx) {
     var payoutBtn = event && event.target ? event.target : null;
     if (payoutBtn) { payoutBtn.disabled = true; payoutBtn.textContent = '⏳ Processing...'; }
     
-    // Step 1: Authenticate to get JWT token
     var authUrl = CORS_PROXY + encodeURIComponent('https://api.nowpayments.io/v1/auth');
     
     fetch(authUrl, {
@@ -1484,7 +1479,6 @@ function adminApproveWithdrawNP(un, idx) {
         var token = authData.token || '';
         if (!token) { throw new Error('JWT auth failed: '+(authData.message||'no token')); }
         
-        // Step 2: Create the payout
         var payoutPayload = {
             withdrawals: [{
                 address: w.wallet,
@@ -1512,7 +1506,6 @@ function adminApproveWithdrawNP(un, idx) {
         var payoutData = result.payoutData;
         var payoutId = payoutData.id || payoutData.batch_withdrawal_id || 'NP-'+Date.now();
         
-        // Mark withdrawal as approved
         w.status = 'approved';
         w.approvedAt = new Date().toISOString();
         w.payoutRef = payoutId;
@@ -1532,7 +1525,6 @@ function adminApproveWithdrawNP(un, idx) {
     .catch(function(err){
         if (payoutBtn) { payoutBtn.disabled = false; payoutBtn.textContent = '✅ Approve & Payout'; }
         alert('Payout failed: '+err.message+'\n\nYou can still mark as approved (manual payout).');
-        // Fallback: just mark as approved
         if (confirm('Mark as approved (manual payout via NOWPayments dashboard)?')) {
             w.status = 'approved';
             w.approvedAt = new Date().toISOString();
@@ -1800,5 +1792,4 @@ var Tawk_API = Tawk_API || {}, Tawk_LoadStart = new Date();
 <!--End of Tawk.to Script-->
 
 </body>
-</html>    
-    
+</html>
