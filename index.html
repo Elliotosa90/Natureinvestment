@@ -556,10 +556,7 @@
     </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- JAVASCRIPT: FIREBASE + ALL APPLICATION LOGIC -->
-<!-- ============================================================ -->
-  <script>
+<script>
 // ==================================================================
 // FIREBASE CONFIG
 // ==================================================================
@@ -584,11 +581,6 @@ var CURRENCY_CODE = "USD";
 var DEFAULT_MIN_DEPOSIT = 10;
 var DEFAULT_MIN_WITHDRAW = 5;
 var ASSET_SWITCH_COOLDOWN_HOURS = 24;
-var proxyList = [
-    "https://api.allorigins.win/raw?url=",
-    "https://corsproxy.io/?url=",
-    "https://api.codetabs.com/v1/proxy?quest="
-];
 
 var ASSET_TYPES = {
     metallic: { id:'metallic', name:'Metallic Minerals', icon:'⛏️', color:'var(--purple)', description:'Iron, Copper, Gold, Silver, Platinum', defaultRate:2.0 },
@@ -635,7 +627,7 @@ function getAssetSwitchCooldownRemaining(userData) {
 }
 
 // ==================================================================
-// SESSION PERSISTENCE
+// SESSION
 // ==================================================================
 function saveSession(username, isAdmin) {
     try { localStorage.setItem('nz_session', JSON.stringify({username:username, isAdmin:isAdmin||false, timestamp:Date.now()})); } catch(e){}
@@ -753,7 +745,7 @@ function openAdminLogin() { document.getElementById('adminLoginError').textConte
 function closeAdminLogin() { document.getElementById('adminLoginOverlay').classList.remove('active'); }
 
 // ==================================================================
-// USER REGISTRATION
+// REGISTER
 // ==================================================================
 function userRegister() {
     var u = document.getElementById('regUsername').value.trim(),
@@ -794,7 +786,7 @@ function resolveRef(ref) {
 }
 
 // ==================================================================
-// USER LOGIN
+// LOGIN
 // ==================================================================
 function userLogin() {
     var u = document.getElementById('loginUsername').value.trim(),
@@ -841,7 +833,7 @@ function adminLogin() {
 }
 
 // ==================================================================
-// DASHBOARD ENTRY
+// DASHBOARD
 // ==================================================================
 function enterDashboard(t) {
     document.getElementById('authContainer').classList.add('hidden');
@@ -982,7 +974,7 @@ function updateCountdownDisplay() {
 }
 
 // ==================================================================
-// RENDER ASSET DISPLAY
+// ASSET DISPLAY
 // ==================================================================
 function renderAssetDisplay() {
     if (!currentUserData) return;
@@ -1156,7 +1148,7 @@ function showProfileModal() {
 function closeModal(id) { document.getElementById(id).classList.remove('active'); }
 
 // ==================================================================
-// DEPOSIT — AUTOMATIC with NOWPayments create payment
+// DEPOSIT — AUTOMATIC via thingproxy + NOWPayments hosted payment link
 // ==================================================================
 function showDepositModal() {
     var apiKey = appData.settings && appData.settings.npApiKey;
@@ -1170,6 +1162,8 @@ function showDepositModal() {
     document.getElementById('createInvoiceBtn').disabled = false;
     document.getElementById('createInvoiceBtn').textContent = '💰 Deposit Now';
     document.getElementById('depositInvoiceLink').style.display = 'block';
+    var oldWidget = document.getElementById('npWidgetContainer');
+    if (oldWidget) oldWidget.remove();
     if (depositPollInterval) { clearInterval(depositPollInterval); depositPollInterval = null; }
     document.getElementById('depositModal').classList.add('active');
 }
@@ -1185,7 +1179,15 @@ function createDepositInvoice() {
 
     var orderId = 'NZ-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8);
     document.getElementById('createInvoiceBtn').disabled = true;
-    document.getElementById('createInvoiceBtn').textContent = '⏳ Creating deposit address...';
+    document.getElementById('createInvoiceBtn').textContent = '⏳ Creating payment...';
+
+    // Hide the link button initially — we'll show it if proxy fails
+    document.getElementById('depositInvoiceLink').style.display = 'none';
+
+    // Try creating invoice via thingproxy (preserves API key headers)
+    var proxyUrl = 'https://thingproxy.freeboard.io/fetch/';
+    var targetUrl = 'https://api.nowpayments.io/v1/invoice';
+    var fullUrl = proxyUrl + encodeURIComponent(targetUrl);
 
     var payload = {
         price_amount: amt,
@@ -1193,26 +1195,12 @@ function createDepositInvoice() {
         pay_currency: cur,
         order_id: orderId,
         order_description: 'NatureZone deposit for ' + currentUser,
-        ipn_callback_url: (appData.settings && appData.settings.npIpnUrl) || '',
+        ipn_callback_url: (appData.settings && appData.settings.npIpnUrl) || window.location.origin + '/np-callback',
+        success_url: window.location.href,
+        cancel_url: window.location.href,
         is_fixed_rate: true,
         is_fee_paid_by_user: true
     };
-
-    tryCreatePayment(payload, amt, cur, orderId, e, 0);
-}
-
-function tryCreatePayment(payload, amt, cur, orderId, e, proxyIndex) {
-    if (proxyIndex >= proxyList.length) {
-        document.getElementById('createInvoiceBtn').disabled = false;
-        document.getElementById('createInvoiceBtn').textContent = '💰 Deposit Now';
-        e.textContent = 'Payment processor unreachable. Try again later.';
-        return;
-    }
-
-    var apiKey = appData.settings && appData.settings.npApiKey;
-    var proxyUrl = proxyList[proxyIndex];
-    var targetUrl = 'https://api.nowpayments.io/v1/payment';
-    var fullUrl = proxyUrl + encodeURIComponent(targetUrl);
 
     fetch(fullUrl, {
         method: 'POST',
@@ -1229,119 +1217,90 @@ function tryCreatePayment(payload, amt, cur, orderId, e, proxyIndex) {
     .then(function(data) {
         if (data.contents) { try { data = JSON.parse(data.contents); } catch (er) {} }
 
-        if (data.payment_id && data.pay_address) {
-            handlePaymentCreated(data, amt, cur, orderId);
-        } else if (data.id && data.invoice_url) {
-            handleInvoiceCreated(data, amt, orderId);
+        if (data.id && data.invoice_url) {
+            // Success — show the widget
+            showWidgetPayment(data.id, data.invoice_url, amt, orderId);
+        } else if (data.id) {
+            showWidgetPayment(data.id, null, amt, orderId);
         } else {
-            tryCreatePayment(payload, amt, cur, orderId, e, proxyIndex + 1);
+            // Fallback to direct link
+            showDirectPaymentLink(amt, cur, orderId, apiKey);
         }
     })
-    .catch(function() {
-        tryCreatePayment(payload, amt, cur, orderId, e, proxyIndex + 1);
+    .catch(function(err) {
+        // Proxy failed — fallback to direct payment link
+        showDirectPaymentLink(amt, cur, orderId, apiKey);
     });
 }
 
-function handlePaymentCreated(data, amt, cur, orderId) {
-    _pendingDepositInvoiceId = data.payment_id;
+function showWidgetPayment(invoiceId, invoiceUrl, amt, orderId) {
+    _pendingDepositInvoiceId = invoiceId;
     document.getElementById('depositCreateArea').classList.add('hidden');
     document.getElementById('depositInvoiceArea').classList.remove('hidden');
-
-    var payAmt = data.pay_amount || amt;
-    var curUpper = cur.toUpperCase();
-
-    document.getElementById('depositAddressDisplay').innerHTML =
-        'Send exactly <strong>' + Number(payAmt).toFixed(8) + ' ' + curUpper + '</strong> to:<br>' +
-        '<div style="background:#1a1a1a;border:2px solid var(--blue);border-radius:6px;padding:14px;margin-top:8px;word-break:break-all;font-family:monospace;font-size:15px;color:var(--blue);user-select:all;font-weight:600;">' +
-        esc(data.pay_address) + '</div>' +
-        '<button onclick="copyText(\'' + esc(data.pay_address) + '\')" style="margin-top:6px;padding:6px 16px;background:var(--blue);color:white;border:none;border-radius:4px;cursor:pointer;font-size:12px;">📋 Copy Address</button>';
-
-    document.getElementById('depositPayAmount').innerHTML =
-        '⏳ Send <strong>' + Number(payAmt).toFixed(8) + ' ' + curUpper + '</strong>';
-
     document.getElementById('depositInvoiceLink').style.display = 'none';
-    document.getElementById('depositStatusPoll').innerHTML =
-        '⏳ Waiting for payment... auto-credits once confirmed.<br>' +
-        '<span style="font-size:12px;color:var(--text3);">Payment ID: ' + data.payment_id + '</span>';
 
-    if (depositPollInterval) clearInterval(depositPollInterval);
-    depositPollInterval = setInterval(function() {
-        pollPaymentStatus(data.payment_id, amt, orderId, 0);
-    }, 15000);
-}
-
-function handleInvoiceCreated(data, amt, orderId) {
-    _pendingDepositInvoiceId = data.id;
-    document.getElementById('depositCreateArea').classList.add('hidden');
-    document.getElementById('depositInvoiceArea').classList.remove('hidden');
     document.getElementById('depositAddressDisplay').innerHTML =
-        '💰 Invoice: $' + Number(amt).toFixed(2) + ' USD';
-    document.getElementById('depositPayAmount').innerHTML = 'Pay on NOWPayments secure page:';
-    document.getElementById('depositInvoiceLink').style.display = 'block';
-    document.getElementById('depositInvoiceLink').href = data.invoice_url;
-    document.getElementById('depositInvoiceLink').textContent = '🔗 Open Payment Page';
+        '<div style="text-align:center;">' +
+        '<div style="font-size:18px;font-weight:700;margin-bottom:4px;">💰 $' + Number(amt).toFixed(2) + ' USD</div>' +
+        '<div style="font-size:13px;color:var(--text2);margin-bottom:12px;">Complete payment below:</div>' +
+        '</div>' +
+        '<div id="npWidgetContainer" style="width:100%;min-height:520px;overflow:hidden;border-radius:8px;">' +
+        '<iframe src="https://nowpayments.io/embeds/payment-widget?iid=' + invoiceId + '" ' +
+        'width="100%" height="520" frameborder="0" scrolling="no" ' +
+        'style="overflow:hidden;border:1px solid var(--border);border-radius:8px;max-width:410px;margin:0 auto;display:block;">' +
+        '</iframe></div>';
+
+    document.getElementById('depositPayAmount').innerHTML = '';
     document.getElementById('depositStatusPoll').innerHTML =
         '⏳ Waiting for payment... auto-credits once confirmed.';
 
     if (depositPollInterval) clearInterval(depositPollInterval);
     depositPollInterval = setInterval(function() {
-        pollInvoiceStatus(data.id, amt, orderId, 0);
+        pollInvoiceStatus(invoiceId, amt, orderId);
+    }, 10000);
+}
+
+function showDirectPaymentLink(amt, cur, orderId, apiKey) {
+    document.getElementById('depositCreateArea').classList.add('hidden');
+    document.getElementById('depositInvoiceArea').classList.remove('hidden');
+
+    // Build the NOWPayments direct payment URL
+    var invoiceUrl = 'https://nowpayments.io/payment?api_key=' + encodeURIComponent(apiKey) +
+        '&price_amount=' + amt +
+        '&price_currency=usd' +
+        '&pay_currency=' + cur +
+        '&order_id=' + encodeURIComponent(orderId) +
+        '&order_description=' + encodeURIComponent('NatureZone deposit for ' + currentUser) +
+        '&success_url=' + encodeURIComponent(window.location.href) +
+        '&cancel_url=' + encodeURIComponent(window.location.href);
+
+    document.getElementById('depositAddressDisplay').innerHTML =
+        '<div style="text-align:center;">' +
+        '<div style="font-size:18px;font-weight:700;margin-bottom:8px;">💰 $' + Number(amt).toFixed(2) + ' USD</div>' +
+        '<div style="font-size:13px;color:var(--text2);margin-bottom:8px;">Pay with ' + cur.toUpperCase() + '</div>' +
+        '</div>';
+
+    document.getElementById('depositPayAmount').innerHTML = '';
+    document.getElementById('depositInvoiceLink').style.display = 'block';
+    document.getElementById('depositInvoiceLink').href = invoiceUrl;
+    document.getElementById('depositInvoiceLink').textContent = '🔗 Pay $' + Number(amt).toFixed(2) + ' with ' + cur.toUpperCase();
+    document.getElementById('depositStatusPoll').innerHTML =
+        '⏳ Click the button above to pay on NOWPayments.<br>' +
+        '<span style="font-size:11px;color:var(--text3);">Auto-credits once payment is confirmed (checking every 15s).</span>';
+
+    if (depositPollInterval) clearInterval(depositPollInterval);
+    depositPollInterval = setInterval(function() {
+        pollByOrderId(orderId, amt, apiKey);
     }, 15000);
 
-    window.open(data.invoice_url, '_blank');
+    window.open(invoiceUrl, '_blank');
 }
 
-function pollPaymentStatus(paymentId, amt, orderId, proxyIndex) {
-    if (proxyIndex >= proxyList.length) return;
-
+function pollInvoiceStatus(invoiceId, amt, orderId) {
     var apiKey = appData.settings && appData.settings.npApiKey;
     if (!apiKey) return;
 
-    var proxyUrl = proxyList[proxyIndex];
-    var targetUrl = 'https://api.nowpayments.io/v1/payment/' + paymentId;
-    var fullUrl = proxyUrl + encodeURIComponent(targetUrl);
-
-    fetch(fullUrl, {
-        method: 'GET',
-        headers: { 'x-api-key': apiKey }
-    })
-    .then(function(r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-    })
-    .then(function(data) {
-        if (data.contents) { try { data = JSON.parse(data.contents); } catch (er) {} }
-        var status = data.payment_status || '';
-        document.getElementById('depositStatusPoll').innerHTML =
-            '⏳ Status: ' + status + ' (checking...)';
-
-        if (status === 'finished' || status === 'confirmed' || status === 'sending') {
-            clearInterval(depositPollInterval);
-            depositPollInterval = null;
-            creditDeposit(orderId, amt);
-            return;
-        }
-        if (status === 'expired' || status === 'failed' || status === 'refunded') {
-            clearInterval(depositPollInterval);
-            depositPollInterval = null;
-            document.getElementById('depositStatusPoll').innerHTML =
-                '❌ Payment ' + status + '. Close and try again.';
-            document.getElementById('depositCreateArea').classList.remove('hidden');
-            document.getElementById('depositInvoiceArea').classList.add('hidden');
-            document.getElementById('createInvoiceBtn').disabled = false;
-            document.getElementById('createInvoiceBtn').textContent = '💰 Deposit Now';
-        }
-    })
-    .catch(function() {});
-}
-
-function pollInvoiceStatus(invoiceId, amt, orderId, proxyIndex) {
-    if (proxyIndex >= proxyList.length) return;
-
-    var apiKey = appData.settings && appData.settings.npApiKey;
-    if (!apiKey) return;
-
-    var proxyUrl = proxyList[proxyIndex];
+    var proxyUrl = 'https://thingproxy.freeboard.io/fetch/';
     var targetUrl = 'https://api.nowpayments.io/v1/invoice/' + invoiceId;
     var fullUrl = proxyUrl + encodeURIComponent(targetUrl);
 
@@ -1358,18 +1317,21 @@ function pollInvoiceStatus(invoiceId, amt, orderId, proxyIndex) {
         var status = data.payment_status || data.status || '';
         document.getElementById('depositStatusPoll').innerHTML =
             '⏳ Status: ' + status + ' (checking...)';
+
         if (status === 'finished' || status === 'confirmed' || status === 'sending') {
             clearInterval(depositPollInterval);
             depositPollInterval = null;
+            document.getElementById('depositStatusPoll').innerHTML = '✅ Payment confirmed! Crediting...';
             creditDeposit(orderId, amt);
         }
-        if (status === 'expired' || status === 'failed' || status === 'refunded') {
+        if (status === 'expired' || status === 'failed' || status === 'refunded' || status === 'cancelled') {
             clearInterval(depositPollInterval);
             depositPollInterval = null;
-            document.getElementById('depositStatusPoll').innerHTML =
-                '❌ Payment ' + status + '. Close and try again.';
+            document.getElementById('depositStatusPoll').innerHTML = '❌ Payment ' + status + '. Close and try again.';
             document.getElementById('depositCreateArea').classList.remove('hidden');
             document.getElementById('depositInvoiceArea').classList.add('hidden');
+            var oldWidget = document.getElementById('npWidgetContainer');
+            if (oldWidget) oldWidget.remove();
             document.getElementById('createInvoiceBtn').disabled = false;
             document.getElementById('createInvoiceBtn').textContent = '💰 Deposit Now';
         }
@@ -1377,15 +1339,37 @@ function pollInvoiceStatus(invoiceId, amt, orderId, proxyIndex) {
     .catch(function() {});
 }
 
-function copyText(text) {
-    if (navigator.clipboard) {
-        navigator.clipboard.writeText(text).then(function() { alert('Address copied!'); });
-    } else {
-        var ta = document.createElement('textarea');
-        ta.value = text; document.body.appendChild(ta); ta.select();
-        document.execCommand('copy'); document.body.removeChild(ta);
-        alert('Address copied!');
-    }
+function pollByOrderId(orderId, amt, apiKey) {
+    if (!apiKey) return;
+
+    var proxyUrl = 'https://thingproxy.freeboard.io/fetch/';
+    var targetUrl = 'https://api.nowpayments.io/v1/payment?order_id=' + encodeURIComponent(orderId) + '&limit=5';
+    var fullUrl = proxyUrl + encodeURIComponent(targetUrl);
+
+    fetch(fullUrl, {
+        method: 'GET',
+        headers: { 'x-api-key': apiKey }
+    })
+    .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    })
+    .then(function(data) {
+        if (data.contents) { try { data = JSON.parse(data.contents); } catch (er) {} }
+        var payments = data.data || data.results || [];
+        for (var i = 0; i < payments.length; i++) {
+            var status = payments[i].payment_status || '';
+            if (payments[i].order_id === orderId &&
+                (status === 'finished' || status === 'confirmed' || status === 'sending')) {
+                clearInterval(depositPollInterval);
+                depositPollInterval = null;
+                document.getElementById('depositStatusPoll').innerHTML = '✅ Payment confirmed! Crediting...';
+                creditDeposit(orderId, amt);
+                return;
+            }
+        }
+    })
+    .catch(function() {});
 }
 
 // ==================================================================
@@ -1499,7 +1483,7 @@ function adminCreditUser(un) {
 }
 
 // ==================================================================
-// ADMIN FUNCTIONS
+// ADMIN
 // ==================================================================
 function refreshAdminData() {
     if (!appData) return;
@@ -1572,9 +1556,6 @@ function renderPendingWithdrawals() {
     }).join('');
 }
 
-// ==================================================================
-// ADMIN APPROVE WITHDRAWAL
-// ==================================================================
 function adminApproveWithdrawNP(un, idx) {
     if (!appData.users[un] || !appData.users[un].withdrawals || !appData.users[un].withdrawals[idx]) return;
     var w = appData.users[un].withdrawals[idx];
@@ -1588,7 +1569,7 @@ function adminApproveWithdrawNP(un, idx) {
     var payoutBtn = event && event.target ? event.target : null;
     if (payoutBtn) { payoutBtn.disabled = true; payoutBtn.textContent = '⏳ Processing...'; }
 
-    var proxyUrl = proxyList[0];
+    var proxyUrl = 'https://thingproxy.freeboard.io/fetch/';
     var authUrl = proxyUrl + encodeURIComponent('https://api.nowpayments.io/v1/auth');
 
     fetch(authUrl, {
@@ -1628,12 +1609,10 @@ function adminApproveWithdrawNP(un, idx) {
     .then(function(result){
         var payoutData = result.payoutData;
         var payoutId = payoutData.id || payoutData.batch_withdrawal_id || 'NP-'+Date.now();
-
         w.status = 'approved';
         w.approvedAt = new Date().toISOString();
         w.payoutRef = payoutId;
         w.payoutStatus = 'processing';
-
         db.ref('users/'+un+'/withdrawals/'+idx).set(w).then(function(){
             if (payoutBtn) { payoutBtn.disabled = false; payoutBtn.textContent = '✅ Approve & Payout'; }
             document.getElementById('payoutResultTitle').textContent = '✅ Payout Sent!';
@@ -1661,9 +1640,6 @@ function adminApproveWithdrawNP(un, idx) {
     });
 }
 
-// ==================================================================
-// ADMIN DECLINE WITHDRAWAL
-// ==================================================================
 function adminDeclineWithdraw(un, idx) {
     if (!confirm('Decline and refund?')) return;
     var w = appData.users[un].withdrawals[idx];
@@ -1678,9 +1654,6 @@ function adminDeclineWithdraw(un, idx) {
     db.ref('/').update(updates);
 }
 
-// ==================================================================
-// ADMIN USER MANAGEMENT
-// ==================================================================
 function adminSetStatus(un) { var s=document.getElementById('userStatus_'+un).value; db.ref('users/'+un+'/status').set(s); }
 
 function adminAddBalance(un) {
@@ -1717,193 +1690,130 @@ function adminDeductBalance(un) {
     db.ref('/').update(updates);
 }
 
+// ==================================================================
+// ADMIN (continued)
+// ==================================================================
 function adminResetUserAccount(un) {
     if (!confirm('Reset account for '+un+'? All data wiped.')) return;
     var u = appData.users[un];
     if (!u) return;
     u.balance=0; u.invested=0; u.profit=0; u.referralBonus=0;
     u.transactions=[]; u.withdrawals=[]; u.referrals=[];
-    u.lastInterestDate=''; u.asset='metallic'; u.lastAssetSwitch=''; u.bonusPaidReferees=[];
+    u.processedReferences=[]; u.bonusPaidReferees=[];
     var updates = {};
-    updates['users/'+un+'/balance']=0; updates['users/'+un+'/invested']=0;
-    updates['users/'+un+'/profit']=0; updates['users/'+un+'/referralBonus']=0;
-    updates['users/'+un+'/transactions']=[]; updates['users/'+un+'/withdrawals']=[];
-    updates['users/'+un+'/referrals']=[]; updates['users/'+un+'/lastInterestDate']='';
-    updates['users/'+un+'/asset']='metallic'; updates['users/'+un+'/lastAssetSwitch']='';
-    updates['users/'+un+'/bonusPaidReferees']=[];
-    db.ref('/').update(updates).then(function(){alert('Account reset for '+un);});
+    updates['users/'+un+'/balance'] = 0;
+    updates['users/'+un+'/invested'] = 0;
+    updates['users/'+un+'/profit'] = 0;
+    updates['users/'+un+'/referralBonus'] = 0;
+    updates['users/'+un+'/transactions'] = [];
+    updates['users/'+un+'/withdrawals'] = [];
+    updates['users/'+un+'/referrals'] = [];
+    updates['users/'+un+'/processedReferences'] = [];
+    updates['users/'+un+'/bonusPaidReferees'] = [];
+    db.ref('/').update(updates).then(function(){ alert('Account reset.'); refreshAdminData(); });
 }
 
 function adminDeleteUser(un) {
-    if (!confirm('⚠️ PERMANENTLY DELETE '+un+'?\n\nThis cannot be undone!')) return;
-    if (!confirm('Are you absolutely sure?')) return;
-    db.ref('users/'+un).remove().then(function(){alert('User '+un+' deleted.');});
-}
-
-function adminUpdateMinAmounts() {
-    var d = parseFloat(document.getElementById('adminMinDeposit').value);
-    var w = parseFloat(document.getElementById('adminMinWithdraw').value);
-    if (isNaN(d)||d<1||isNaN(w)||w<1) return;
-    var updates = {};
-    updates['settings/minDeposit'] = d;
-    updates['settings/minWithdraw'] = w;
-    db.ref('/').update(updates);
-}
-
-function adminSaveAssetRates() {
-    var rates = {};
-    for (var aid in ASSET_TYPES) {
-        var val = parseFloat(document.getElementById('adminAssetRate_'+aid).value);
-        if (!isNaN(val)&&val>=0) rates[aid]=val;
-    }
-    db.ref('settings/assetRates').set(rates).then(function(){
-        document.getElementById('assetRateMsg').textContent='Asset rates saved!';
-        setTimeout(function(){document.getElementById('assetRateMsg').textContent='';},3000);
+    if (!confirm('DELETE user '+un+' permanently? Cannot undo.')) return;
+    if (!confirm('Are you sure?')) return;
+    db.ref('users/'+un).remove().then(function(){
+        delete appData.users[un];
+        refreshAdminData();
     });
 }
 
 function adminSaveNPSettings() {
-    var api = document.getElementById('adminNPApiKey').value.trim();
-    var sk = document.getElementById('adminNPSecretKey').value.trim();
-    var em = document.getElementById('adminNPEmail').value.trim();
-    var pw = document.getElementById('adminNPPassword').value.trim();
-    var ipn = document.getElementById('adminNPIPNUrl').value.trim();
     var updates = {};
-    updates['settings/npApiKey'] = api;
-    updates['settings/npSecretKey'] = sk;
-    updates['settings/npEmail'] = em;
-    updates['settings/npPassword'] = pw;
-    updates['settings/npIpnUrl'] = ipn;
+    var apiKey = document.getElementById('adminNPApiKey').value.trim();
+    var secretKey = document.getElementById('adminNPSecretKey').value.trim();
+    var email = document.getElementById('adminNPEmail').value.trim();
+    var password = document.getElementById('adminNPPassword').value.trim();
+    var ipnUrl = document.getElementById('adminNPIPNUrl').value.trim();
+
+    updates['settings/npApiKey'] = apiKey;
+    updates['settings/npSecretKey'] = secretKey;
+    updates['settings/npEmail'] = email;
+    updates['settings/npPassword'] = password;
+    updates['settings/npIpnUrl'] = ipnUrl;
+
     db.ref('/').update(updates).then(function(){
-        document.getElementById('npSettingsMsg').textContent='✅ NOWPayments settings saved!';
-        setTimeout(function(){document.getElementById('npSettingsMsg').textContent='';},3000);
-    });
-}
-
-function adminCreateUser() {
-    var u = document.getElementById('adminNewUser').value.trim();
-    var p = document.getElementById('adminNewPass').value.trim();
-    var n = document.getElementById('adminNewName').value.trim();
-    if (!u||!p||!n) { document.getElementById('adminCreateMsg').textContent='Fill all fields.'; return; }
-    if (appData.users&&appData.users[u]) { document.getElementById('adminCreateMsg').textContent='Already exists.'; return; }
-    var nd = new Date(), d = nd.getFullYear()+'-'+String(nd.getMonth()+1).padStart(2,'0')+'-'+String(nd.getDate()).padStart(2,'0');
-    var newUser = {
-        fullName:n, email:u+'@naturezone.local', phone:'', password:p,
-        balance:0, invested:0, profit:0, referralBonus:0,
-        referralCode:u, referredBy:'', plan:'Basic', status:'active',
-        createdAt:d, lastInterestDate:'',
-        transactions:[], withdrawals:[], referrals:[],
-        processedReferences:[], bonusPaidReferees:[],
-        asset:'metallic', lastAssetSwitch:''
-    };
-    db.ref('users/'+u).set(newUser).then(function(){
-        document.getElementById('adminCreateMsg').textContent='Created: '+u;
-        ['adminNewUser','adminNewPass','adminNewName'].forEach(function(i){document.getElementById(i).value='';});
-    });
-}
-
-function changeAdminPassword() {
-    var cur = document.getElementById('adminCurrentPass').value;
-    var nw = document.getElementById('adminNewPassInput').value;
-    if (!cur||!nw) { document.getElementById('changePassMsg').textContent='Fill both.'; return; }
-    if (appData.admin.password !== cur) { document.getElementById('changePassMsg').textContent='Wrong current password.'; document.getElementById('changePassMsg').style.color='var(--red)'; return; }
-    db.ref('admin/password').set(nw).then(function(){
-        document.getElementById('changePassMsg').innerHTML='✅ Password changed.';
-        document.getElementById('changePassMsg').style.color='var(--green)';
-        document.getElementById('adminCurrentPass').value='';
-        document.getElementById('adminNewPassInput').value='';
-    });
-}
-
-function adminResetUserPassword() {
-    var u = document.getElementById('adminResetUser').value.trim();
-    var p = document.getElementById('adminResetUserPass').value.trim();
-    if (!u||!p) { document.getElementById('resetUserPassMsg').textContent='Fill both.'; return; }
-    if (!appData.users[u]) { document.getElementById('resetUserPassMsg').textContent='Not found.'; return; }
-    db.ref('users/'+u+'/password').set(p).then(function(){
-        document.getElementById('resetUserPassMsg').innerHTML='✅ Password reset for '+u;
-        document.getElementById('adminResetUser').value='';
-        document.getElementById('adminResetUserPass').value='';
-    });
-}
-
-function adminPayAllProfits() {
-    if (!confirm('Apply daily interest to ALL active users?')) return;
-    var today = new Date().toISOString();
-    var updates = {};
-    var count = 0;
-    for (var un in appData.users) {
-        var u = appData.users[un];
-        if (u.status === 'active' && u.balance > 0) {
-            var shouldApply = false;
-            if (!u.lastInterestDate) { shouldApply = true; }
-            else {
-                var lastTime = new Date(u.lastInterestDate);
-                var diffHours = (new Date()-lastTime)/(1000*60*60);
-                if (diffHours >= 24) shouldApply = true;
-            }
-            if (shouldApply) {
-                var rate = getUserInterestRate(u);
-                var i = u.balance * (rate/100);
-                u.balance += i;
-                u.profit += i;
-                if (!u.transactions) u.transactions = [];
-                var d = getNowStr();
-                var assetInfo = getAssetInfo(u.asset||'metallic');
-                u.transactions.push({date:d, type:'profit', amount:i, description:assetInfo.icon+' '+assetInfo.name+' interest '+rate+'%'});
-                u.lastInterestDate = today;
-                updates['users/'+un+'/balance'] = u.balance;
-                updates['users/'+un+'/profit'] = u.profit;
-                updates['users/'+un+'/transactions'] = u.transactions;
-                updates['users/'+un+'/lastInterestDate'] = today;
-                count++;
-            }
+        if (appData.settings) {
+            appData.settings.npApiKey = apiKey;
+            appData.settings.npSecretKey = secretKey;
+            appData.settings.npEmail = email;
+            appData.settings.npPassword = password;
+            appData.settings.npIpnUrl = ipnUrl;
         }
-    }
-    if (count > 0) {
-        db.ref('/').update(updates).then(function(){document.getElementById('adminActionMsg').textContent='Applied to '+count+' users.';});
-    } else {
-        document.getElementById('adminActionMsg').textContent='All already done or no eligible users.';
-    }
+        alert('NOWPayments settings saved.');
+        refreshAdminData();
+    });
 }
 
-function resetPasswordRequest() {
-    var u = document.getElementById('resetUsername').value.trim(), m = document.getElementById('resetMsg');
-    if (!u) { m.textContent='Enter username.'; m.style.color='#E50914'; return; }
-    if (!appData||!appData.users[u]) { m.textContent='Username not found.'; m.style.color='#E50914'; return; }
-    m.textContent='Contact admin to reset your password.'; m.style.color='#e6b91e';
+function adminSaveAssetRates() {
+    var updates = {};
+    for (var aid in ASSET_TYPES) {
+        var val = parseFloat(document.getElementById('adminAssetRate_'+aid).value);
+        if (isNaN(val) || val <= 0) { alert('Invalid rate for '+ASSET_TYPES[aid].name); return; }
+        updates['settings/assetRates/'+aid] = val;
+    }
+    db.ref('/').update(updates).then(function(){
+        if (!appData.settings) appData.settings = {};
+        if (!appData.settings.assetRates) appData.settings.assetRates = {};
+        for (var aid2 in ASSET_TYPES) {
+            appData.settings.assetRates[aid2] = parseFloat(document.getElementById('adminAssetRate_'+aid2).value);
+        }
+        alert('Asset rates saved.');
+        refreshAdminData();
+    });
+}
+
+function adminSaveMinDeposit() {
+    var val = parseFloat(document.getElementById('adminMinDeposit').value);
+    if (isNaN(val) || val < 1) { alert('Enter valid min deposit.'); return; }
+    db.ref('settings/minDeposit').set(val).then(function(){
+        if (appData.settings) appData.settings.minDeposit = val;
+        alert('Min deposit updated.');
+        refreshAdminData();
+    });
+}
+
+function adminSaveMinWithdraw() {
+    var val = parseFloat(document.getElementById('adminMinWithdraw').value);
+    if (isNaN(val) || val < 1) { alert('Enter valid min withdraw.'); return; }
+    db.ref('settings/minWithdraw').set(val).then(function(){
+        if (appData.settings) appData.settings.minWithdraw = val;
+        alert('Min withdraw updated.');
+        refreshAdminData();
+    });
 }
 
 // ==================================================================
-// BOOT
+// MODAL CLOSE ON OUTSIDE CLICK
 // ==================================================================
-(function boot() {
-    var session = getSession();
-    if (session && session.username) {
-        initPromise.then(function(){
-            if (session.isAdmin && session.username === 'admin') {
-                isAdminLoggedIn = true;
-                currentUser = 'admin';
-                currentUserData = null;
-                enterDashboard('admin');
-            } else if (appData && appData.users && appData.users[session.username]) {
-                var user = appData.users[session.username];
-                if (user.status !== 'closed') {
-                    currentUser = session.username;
-                    currentUserData = user;
-                    isAdminLoggedIn = false;
-                    applyDailyInterest().then(function(){enterDashboard('user');});
-                } else { clearSession(); }
-            } else { clearSession(); }
-        });
-    }
-})();
+document.addEventListener('click', function(e) {
+    document.querySelectorAll('.modal-overlay').forEach(function(modal) {
+        if (e.target === modal) {
+            modal.classList.remove('active');
+        }
+    });
+});
+
+// ==================================================================
+// INIT ON PAGE LOAD
+// ==================================================================
+document.addEventListener('DOMContentLoaded', function() {
+    // Restore session after Firebase data loads
+    initPromise.then(function() {
+        var restored = restoreSessionFromStorage();
+        if (!restored) {
+            document.getElementById('authContainer').classList.remove('hidden');
+        }
+    });
+});
 </script>
-
-
-
     
-<!--Start of Tawk.to Script-->
+    
+    <!--Start of Tawk.to Script-->
 <script type="text/javascript">
 var Tawk_API = Tawk_API || {}, Tawk_LoadStart = new Date();
 (function(){
