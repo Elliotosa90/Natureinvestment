@@ -1948,17 +1948,15 @@ function changeAdminPassword() {
     var n = document.getElementById('adminNewPassInput').value.trim();
     if (!c || !n) { document.getElementById('changePassMsg').textContent = 'Fill both fields.'; return; }
     if (c !== appData.admin.password) { document.getElementById('changePassMsg').textContent = 'Current password wrong.'; return; }
-    if (n.length < 4) { document.getElementById('changePassMsg').textContent = 'Min 4 characters.';
-      db.ref('admin/password').set(n).then(function(){
+    if (n.length < 4) { document.getElementById('changePassMsg').textContent = 'Min 4 characters.'; return; }
+    db.ref('admin/password').set(n).then(function(){
         appData.admin.password = n;
         document.getElementById('changePassMsg').textContent = '✅ Password updated!';
         document.getElementById('changePassMsg').style.color = 'var(--green)';
     });
 }
 
-// ==================================================================
-// PART 44: REMAINING ORIGINAL FUNCTIONS (unchanged)
-// ==================================================================                 
+
 
 // ==================================================================
 // PART 44: REMAINING ORIGINAL FUNCTIONS (unchanged)
@@ -1988,9 +1986,7 @@ function resetPasswordRequest() {
     }
 }
 
-// ==================================================================
-// PART 45: AUTH UI FUNCTIONS (restored fully)
-// ==================================================================
+
 
 
 // ==================================================================
