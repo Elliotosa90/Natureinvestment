@@ -871,10 +871,22 @@ db.ref('/').on('value', function(snapshot) {
 // ==================================================================
 // PART 25: AUTH UI (unchanged from original)
 // ==================================================================
-function showAuthTab(t) { /* identical to original */ }
-function toggleResetPassword() { /* identical to original */ }
-function openAdminLogin() { /* identical to original */ }
-function closeAdminLogin() { /* identical to original */ }
+function showAuthTab(t) {
+    document.querySelectorAll('.auth-tabs div').forEach(function(e){e.classList.remove('active');});
+    if(t==='login'){
+        document.getElementById('loginForm').classList.remove('hidden');
+        document.getElementById('registerForm').classList.add('hidden');
+        document.querySelector('.auth-tabs div:first-child').classList.add('active');
+    } else {
+        document.getElementById('loginForm').classList.add('hidden');
+        document.getElementById('registerForm').classList.remove('hidden');
+        document.querySelector('.auth-tabs div:last-child').classList.add('active');
+    }
+    ['loginError','registerError','registerSuccess'].forEach(function(i){document.getElementById(i).textContent='';});
+}
+function toggleResetPassword() { var s=document.getElementById('resetSection'); s.classList.toggle('show'); document.getElementById('resetUsername').value=''; document.getElementById('resetMsg').textContent=''; }
+function openAdminLogin() { document.getElementById('adminLoginError').textContent=''; document.getElementById('adminLoginUser').value=''; document.getElementById('adminLoginPass').value=''; document.getElementById('adminLoginOverlay').classList.add('active'); }
+function closeAdminLogin() { document.getElementById('adminLoginOverlay').classList.remove('active'); }
 
 // (I'm abbreviating the unchanged functions to save space — the full versions are identical to the original code you provided)
 // ==================================================================
