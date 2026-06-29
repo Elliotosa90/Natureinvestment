@@ -892,14 +892,89 @@ function closeAdminLogin() { document.getElementById('adminLoginOverlay').classL
 // ==================================================================
 // PART 26: REGISTER (unchanged)
 // ==================================================================
-function userRegister() { /* identical to original */ }
+function userRegister() {
+    var u = document.getElementById('regUsername').value.trim(),
+        fn = document.getElementById('regFullname').value.trim(),
+        em = document.getElementById('regEmail').value.trim(),
+        ph = document.getElementById('regPhone').value.trim(),
+        pw = document.getElementById('regPassword').value.trim(),
+        ref = document.getElementById('regReferral').value.trim(),
+        err = document.getElementById('registerError'),
+        suc = document.getElementById('registerSuccess');
+    if (!u || !fn || !em || !pw) { err.textContent = 'Fill required fields.'; suc.textContent = ''; return; }
+    var usernameRegex = /^[a-zA-Z0-9_]{3,20}$/;
+    if (!usernameRegex.test(u)) { err.textContent = 'Username: 3-20 letters, numbers, underscores.'; suc.textContent = ''; return; }
+    if (appData.users && appData.users[u]) { err.textContent = 'Username taken.'; suc.textContent = ''; return; }
+    if (u.toLowerCase() === 'admin') { err.textContent = 'Username not allowed.'; suc.textContent = ''; return; }
+    if (pw.length < 4) { err.textContent = 'Password min 4 characters.'; suc.textContent = ''; return; }
+    var rbu = '';
+    if (ref) {
+        if (appData.users[ref]) rbu = ref;
+        else { err.textContent = 'Invalid referral code.'; suc.textContent = ''; return; }
+    }
+    var nd = new Date(), d = nd.getFullYear() + '-' + String(nd.getMonth() + 1).padStart(2, '0') + '-' + String(nd.getDate()).padStart(2, '0');
+    var newUser = {
+        fullName: fn, email: em, phone: ph || '', password: pw,
+        balance: 0, invested: 0, profit: 0, referralBonus: 0,
+        referralCode: u, referredBy: rbu, plan: 'Basic', status: 'active',
+        createdAt: d, lastInterestDate: '',
+        transactions: [], withdrawals: [], deposits: [], referrals: [],
+        processedReferences: [], bonusPaidReferees: [],
+        asset: 'metallic', lastAssetSwitch: '',
+        savedWallets: [], manualDeposits: [], manualWithdrawals: []
+    };
+    var updates = {};
+    updates['users/' + u] = newUser;
+    db.ref('/').update(updates).then(function() {
+        err.textContent = '';
+        suc.textContent = 'Account created! Sign in now.';
+        ['regUsername','regFullname','regEmail','regPhone','regPassword','regReferral'].forEach(function(i){document.getElementById(i).value='';});
+    }).catch(function(er) { err.textContent = 'Error creating account.'; console.error(er); });
+}
 
 // ==================================================================
 // PART 27: LOGIN / LOGOUT (unchanged)
 // ==================================================================
-function userLogin() { /* identical to original */ }
-function userLogout() { /* identical to original */ }
-function adminLogin() { /* identical to original */ }
+function userLogin() {
+    var u = document.getElementById('loginUsername').value.trim(),
+        p = document.getElementById('loginPassword').value.trim(),
+        e = document.getElementById('loginError');
+    if (!u || !p) { e.textContent = 'Enter username and password.'; return; }
+    var user = appData.users && appData.users[u];
+    if (!user || user.password !== p) { e.textContent = 'Invalid credentials.'; return; }
+    if (user.status === 'closed') { e.textContent = 'Account closed.'; return; }
+    isAdminLoggedIn = false;
+    currentUser = u;
+    currentUserData = user;
+    saveSession(u, false);
+    applyDailyInterest().then(function() { enterDashboard('user'); });
+}
+
+function userLogout() {
+    if (interestCountdownInterval) clearInterval(interestCountdownInterval);
+    if (depositCountdownInterval) clearInterval(depositCountdownInterval);
+    currentUser = null; currentUserData = null; isAdminLoggedIn = false;
+    clearSession();
+    document.getElementById('authContainer').classList.remove('hidden');
+    document.getElementById('userDashboard').classList.remove('active');
+    document.getElementById('loginUsername').value = '';
+    document.getElementById('loginPassword').value = '';
+}
+
+function adminLogin() {
+    var u = document.getElementById('adminLoginUser').value.trim(),
+        p = document.getElementById('adminLoginPass').value.trim(),
+        e = document.getElementById('adminLoginError');
+    if (!u || !p) { e.textContent = 'Enter credentials.'; return; }
+    if (u === appData.admin.username && p === appData.admin.password) {
+        isAdminLoggedIn = true;
+        currentUser = 'admin';
+        currentUserData = null;
+        closeAdminLogin();
+        saveSession('admin', true);
+        enterDashboard('admin');
+    } else { e.textContent = 'Invalid admin credentials.'; }
+}
 
 // ==================================================================
 // PART 28: DASHBOARD ENTRY & TX TAB
